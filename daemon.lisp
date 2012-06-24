@@ -8,16 +8,17 @@
   (unless (excl.osi:detach-from-terminal-supported-p)
     (error "not supported allegro cl  to detach console")))
 
+(defvar *project-directory* nil)
+
 (defconstant +wnohang+ (if (boundp '+wnohang+) +wnohang+
-			   #+sbcl sb-unix:wnohang
+			   #+sbcl 1
 			   #+allegro 1
-			   #+ccl #$WNOHANG
-			   ))
+			   #+ccl #$WNOHANG))
+
 (defconstant +sigkill+ (if (boundp '+sigkill+) +sigkill+
 			   #+sbcl sb-unix:sigkill
 			   #+allegro excl::*sigkill*
-			   #+ccl #$SIGKILL
-			   ))
+			   #+ccl #$SIGKILL))
 (defvar *o-rdonly* (or 
 		    #+sbcl sb-posix:o-rdonly
 		    #+allegro excl::*o-rdonly*
@@ -33,11 +34,13 @@
 		    #+allegro excl::*o-append*
 		    #+ccl #$O_APPEND
 		    ))
+
+(defvar *run-child-function* 'run-child)
+
 (defun chdir (dir)
   #+sbcl (sb-posix:chdir dir)
   #+allegro (excl:chdir dir)
   #+ccl (ccl::%chdir dir))
-
 
 (defun setenv (env val)
   #+sbcl (sb-posix:setenv env val 1)
@@ -67,7 +70,8 @@
   #+ccl (#_close fd))
 
 (defun exit ()
-  #+sbcl(sb-unix:unix-exit)
+  #+sbcl #+#.(cl:if (cl:find-symbol (cl:symbol-name :exit) :sb-posix) '(:and) '(:or)) (sb-posix:exit 0)
+         #-#.(cl:if (cl:find-symbol (cl:symbol-name :exit) :sb-posix) '(:and) '(:or)) (sb-unix:unix-exit)
   #+allegro (excl:exit 0 :quiet t)
   #+ccl (#_exit 0))
 
@@ -107,12 +111,12 @@
   #+ccl (ccl::with-cstrs ((cstr name)) (#_getpwnam cstr)))
 
 (defun kill (pid signal)
-  #+sbcl (not (= -1 (sb-unix:unix-kill pid signal))) 
+  #+sbcl (not (= -1 (sb-posix:kill pid signal))) 
   #+allegro (excl.osi:kill pid signal)
   #+ccl (#_kill pid signal))
 
 (defun uid-username (uid)
-  #+sbcl (sb-unix:uid-username uid)
+  #+sbcl (sb-posix:passwd-name (sb-posix:getpwuid uid))
   #+allegro (excl.osi:pwent-name (excl.osi:getpwuid uid))
   #+ccl (ccl:%get-cstring (ccl:pref (#_getpwuid uid) :passwd.pw_name)))
 
@@ -125,7 +129,6 @@
   #+sbcl (sb-posix:passwd-dir pswd)
   #+allegro (excl.osi:pwent-dir pswd)
   #+ccl (ccl:%get-cstring(ccl:pref pswd :passwd.pw_dir)))
-
 
 (defun close-fd-streams ()
   (chdir "/")
@@ -164,12 +167,8 @@
   (setq sb-impl::*default-external-format* :utf-8))
 
 #|
-From here by codes should not include lisp implementation dependency.
+From here by should not include lisp implementation dependency.
 |#
-
-(defvar *project-directory* nil)
-(defvar *run-child-function* 'run-child)
-
 
 (defun _ (pkg sym &rest args)
   (let ((symbol (intern (symbol-name sym) (find-package pkg))))
@@ -241,6 +240,10 @@ From here by codes should not include lisp implementation dependency.
     #'(lambda ,lambda-list ,@body)
     ,@options))
 
+(defun delete-file-if-probed (path)
+  (when (probe-file path)
+    (delete-file path)))
+
 (defun shepherd-subdirectories (function path &key 
 				quitable
 				(quit-file-name "quit")
@@ -306,8 +309,7 @@ From here by codes should not include lisp implementation dependency.
 	  ;;kill processes for removed subdir
 	  (loop :for (dir . pid) :in servers
 	     :do (if (kill pid +sigkill+)
-		     (let ((p (merge-pathnames(format nil "~A/~A" dir restart-file-name)
-					      project-directory)))
+		     (progn
 		       (log% (format nil "~@{~A~^,~}~%" 
 				     dir
 				     (format nil  "module finished~A" dir)
@@ -380,28 +382,25 @@ From here by codes should not include lisp implementation dependency.
 		      (format t "~&loading ~S~%" lpath)
 		      (force-output)
 		      (load lpath)
-		      (format t "~&load complete~%" lpath))
+		      (format t "~&load complete~%"))
 		    (format t "~&skip loading ~A~%" lpath))
 		(force-output))
 	      (loop :while (/= (getppid) 1)
 		 :do
 		 (sleep 5))
-	      (format t "~&parent process is dead~%" lpath))
+	      (format t "~&parent process is dead~%"))
 	  (serious-condition (x)
 	    (_ :trivial-backtrace :print-backtrace
 	       x :output *standard-output*)))
 	(format t "~&finish ~S~%" (multiple-value-list 
 				   (decode-universal-time (get-universal-time))))))))
 
-(defun delete-file-if-probed (path)
-  (when (probe-file path)
-    (delete-file path)))
-
 (defun run-projects (&key (project-name "lisp-services")
 		     directory
 		     qlpath
 		     (child-function *run-child-function*)
 		     initialize)
+  (declare (ignorable project-name))
   (chore)
   (with-daemonize
     (with-shepherd-1process () ()
@@ -410,7 +409,7 @@ From here by codes should not include lisp implementation dependency.
       (let ((ql (or qlpath 
 		    (merge-pathnames "quicklisp/setup.lisp"
 				     (pathname (concatenate 'string (passwd-dir (getpwnam *username*)) "/"))))))
-	(when (probe-file ql)
+	(when (ignore-errors (probe-file ql))
 	  (load ql))
 	(_ :asdf :enable-asdf-binary-locations-compatibility 
 	   :centralize-lisp-binaries t
