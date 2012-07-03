@@ -19,10 +19,7 @@
 		       (:postopt ,(or (progn #+sbcl "--no-sysinit --no-userinit"
 					     #+allegro "-qq -- "
 					     #+ccl "--no-init --") ""))
-		       (:projectpath ,(namestring (make-pathname :name nil
-								 :type nil
-								 :version nil
-								 :defaults path)))
+		       (:projectpath "`dirname $0`")
 		       (:loadfile "loadup.lisp"))))
        :stream out))))
 
