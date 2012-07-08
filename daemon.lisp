@@ -202,7 +202,7 @@ From here by should not include lisp implementation dependency.
 	   (pclose 0)
 	   (pclose 1)
 	   (pclose 2)
-	   (retrun-from daemonize pid))))
+	   (return-from daemonize pid))))
   nil)
 
 (defmacro with-daemonize (&body body)
