@@ -1,12 +1,15 @@
 (defpackage :daemon
   (:use :cl)
-  (:export #:run-projects #:exit))
+  (:export #:run-projects 
+	   #:exit
+	   #:daemonize))
+
 (in-package :daemon)
 
 #+allegro
 (eval-when (:load-toplevel :execute)
   (unless (excl.osi:detach-from-terminal-supported-p)
-    (error "not supported allegro cl  to detach console")))
+    (error "not supported allegro cl to detach console")))
 
 (defvar *project-directory* nil)
 
@@ -19,16 +22,19 @@
 			   #+sbcl sb-unix:sigkill
 			   #+allegro excl::*sigkill*
 			   #+ccl #$SIGKILL))
+
 (defvar *o-rdonly* (or 
 		    #+sbcl sb-posix:o-rdonly
 		    #+allegro excl::*o-rdonly*
 		    #+ccl #$O_RDONLY 
 		    ))
+
 (defvar *o-wronly* (or
 		    #+sbcl sb-posix:o-wronly
 		    #+allegro excl::*o-wronly*
 		    #+ccl #$O_WRONLY
 		    ))
+
 (defvar *o-append* (or 
 		    #+sbcl sb-posix:o-append
 		    #+allegro excl::*o-append*
@@ -130,29 +136,31 @@
   #+allegro (excl.osi:pwent-dir pswd)
   #+ccl (ccl:%get-cstring(ccl:pref pswd :passwd.pw_dir)))
 
+;; I have to change this function's name...
 (defun close-fd-streams ()
   (chdir "/")
   #-allegro
   (progn 
-    '(pclose 0)
-    (pclose 1)
-    '(pclose 2)
     #+sbcl
-    (setf sb-sys:*stdin* (make-concatenated-stream))
-    #+sbcl
-    (when (sb-sys:fd-stream-p sb-sys:*tty*) 
-      ;; 4 ?
-      (pclose (sb-sys:fd-stream-fd sb-sys:*tty*))
-      (setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*)))
-    '(let ((write (popen "/dev/null" *o-rdonly*)))
+    (progn
+      (setf sb-sys:*stdin* (make-concatenated-stream))
+      (when (sb-sys:fd-stream-p sb-sys:*tty*) 
+	(close sb-sys:*tty* :abort t)
+	(setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*))))
+    #+ccl 
+    (setf ccl::*stdin* (make-concatenated-stream)
+	  ccl::*stdout* (make-broadcast-stream)
+	  ccl::*terminal-input* ccl::*stdin*
+	  ccl::*terminal-output* ccl::*stdout*
+	  ccl::*terminal-io* (make-two-way-stream 
+			      ccl::*terminal-input* ccl::*terminal-output*))
+    (let ((write (popen "/dev/null" *o-rdonly*)))
       (dup2 write 0)
       (dup2 write 2))
     (dup2 (popen "/dev/null" (logior *o-wronly*
 				     *o-append*)) 1))
   #+allegro 
-  (when (excl.osi:detach-from-terminal-supported-p)
-    (excl.osi:detach-from-terminal)))
-
+  (excl.osi:detach-from-terminal))
 
 (defun chore ()
   #+linux
@@ -168,6 +176,44 @@
 
 #|
 From here by should not include lisp implementation dependency.
+|#
+
+(defun daemonize (&key exit-parent)
+  (let ((pid (fork)))
+    (cond ((zerop pid)
+	   ;; Child
+	   (unless (eql t (setsid))
+	     (exit))
+	   (close-fd-streams)
+	   (let* ((out (make-two-way-stream 
+			(make-concatenated-stream)
+			(make-broadcast-stream))))
+	     (setf *standard-output* out
+		   *error-output* out
+		   *trace-output* out		   
+		   *standard-input* out
+		   *debug-io* out
+		   *query-io* out
+		   *terminal-io* out)))
+	  (t 
+	   ;; Parent
+	   (when exit-parent
+	     (exit))
+	   (pclose 0)
+	   (pclose 1)
+	   (pclose 2)
+	   (retrun-from daemonize pid))))
+  nil)
+
+(defmacro with-daemonize (&body body)
+  `(progn
+     (daemonize :exit-parent t)
+     ,@body
+     (exit)))
+
+#|
+Frome here by are not so important with daemonize. These are used for my daemon-project.
+I consider separate to another file.
 |#
 
 (defun _ (pkg sym &rest args)
@@ -186,32 +232,6 @@ From here by should not include lisp implementation dependency.
 (defun ymdhms (&optional (universal-date (get-universal-time)))
   (let ((date(multiple-value-list (decode-universal-time universal-date))))
     (format nil "~D/~2,'0D/~2,'0D ~2,'0D:~2,'0D:~2,'0D" (sixth date) (fifth date) (fourth date) (third date) (second date) (first date))))
-
-
-
-(defun daemonize (callback)
-  (when (zerop (fork))
-    (unless (eql t (setsid))
-      (exit))
-    (unless (zerop (fork))
-      (exit))
-    (close-fd-streams)
-    (let* ((out (make-two-way-stream 
-		 (make-concatenated-stream)
-		 (make-broadcast-stream)))
-	   (*standard-output* out)
-	   (*error-output* out)
-	   (*trace-output* out)
-	   (*standard-input* out)
-	   (*debug-io* out)
-	   (*query-io* out)
-	   (*terminal-io* out))
-      (funcall callback))
-    (exit)))
-
-(defmacro with-daemonize (&body body)
-  `(daemonize (lambda ()
-		,@body)))
 
 (defvar *username*
   (load-time-value
