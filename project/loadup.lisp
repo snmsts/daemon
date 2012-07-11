@@ -9,6 +9,21 @@
 (defvar *project-directory* nil)
 (defvar *run-child-function* 'run-child)
 
+(defconstant +sigkill+ (if (boundp '+sigkill+) +sigkill+
+			   #+sbcl sb-unix:sigkill
+			   #+allegro excl::*sigkill*
+			   #+ccl #.(read-from-string "#$SIGKILL")))
+
+(defun setenv (env val)
+  #+sbcl (sb-posix:setenv env val 1)
+  #+allegro (setf (sys:getenv env) val)
+  #+ccl (ccl:setenv env val t))
+
+(defun kill (pid signal)
+  #+sbcl (not (= -1 (sb-posix:kill pid signal))) 
+  #+allegro (excl.osi:kill pid signal)
+  #+ccl (#.(read-from-string "#_kill") pid signal))
+
 (defun _ (pkg sym &rest args)
   (let ((symbol (intern (symbol-name sym) (find-package pkg))))
     (if args
@@ -213,6 +228,18 @@
      (daemonize :exit-parent t)
      ,@body
      (exit)))
+
+(defun chore ()
+  #+linux
+  ;; oom_adj should be -17
+  (when (zerop (getpid))
+    (with-open-file (out (format nil "/proc/~A/oom_adj" (getpid))
+			 :direction :output
+			 :if-exists :overwrite
+			 :if-does-not-exist :create)
+      (format out "-17")))
+  #+sbcl
+  (setq sb-impl::*default-external-format* :utf-8))
 
 (defun run-projects (&key (project-name "lisp-services")
 		     directory

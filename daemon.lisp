@@ -18,11 +18,6 @@
 			   #+allegro 1
 			   #+ccl #.(read-from-string "#$WNOHANG")))
 
-(defconstant +sigkill+ (if (boundp '+sigkill+) +sigkill+
-			   #+sbcl sb-unix:sigkill
-			   #+allegro excl::*sigkill*
-			   #+ccl #.(read-from-string "#$SIGKILL")))
-
 (defvar *o-rdonly* (or 
 		    #+sbcl sb-posix:o-rdonly
 		    #+allegro excl::*o-rdonly*
@@ -46,11 +41,6 @@
   #+allegro (excl:chdir dir)
   #+ccl (ccl::%chdir dir))
 
-(defun setenv (env val)
-  #+sbcl (sb-posix:setenv env val 1)
-  #+allegro (setf (sys:getenv env) val)
-  #+ccl (ccl:setenv env val t))
-
 (defun dup2  (old new)
   #+sbcl (sb-posix:dup2 old new)
   #+allegro (excl.osi::syscall-dup2 old new)
@@ -63,15 +53,21 @@
    #+ccl (#.(read-from-string "#_fork"))
    (error "should support fork")))
 
+#-allegro
 (defun popen (fspec flags)
   #+sbcl (sb-posix:open fspec flags)
-  #+allegro (excl.osi:os-open fspec flags)
-  #+ccl (ccl::with-cstrs ((cstr fspec)) (#.(read-from-string "#_open") cstr flags)))
+  #+ccl (ccl:with-cstrs ((cstr fspec)) (#.(read-from-string "#_open") cstr flags)))
 
+#+allegro 
+(ff:def-foreign-call (popen "open") ((path (* :char)) (flags :int)) :strings-convert t)
+
+#-allegro
 (defun pclose (fd)
   #+sbcl (sb-posix:close fd)
-  #+allegro (excl.osi:os-close fd)
   #+ccl (#.(read-from-string "#_close") fd))
+
+#+allegro
+(ff:def-foreign-call (pclose "close") (d)) 
 
 (defun exit ()
   #+sbcl 
@@ -128,11 +124,6 @@
   #+allegro (excl.osi:getpwuid uid)
   #+ccl (#.(read-from-string "#_getpwuid") id))
 
-(defun kill (pid signal)
-  #+sbcl (not (= -1 (sb-posix:kill pid signal))) 
-  #+allegro (excl.osi:kill pid signal)
-  #+ccl (#.(read-from-string "#_kill") pid signal))
-
 (defun uid-username (uid)
   #+sbcl (sb-posix:passwd-name (getpwuid uid))
   #+allegro (excl.osi:pwent-name (getpwuid uid))
@@ -150,9 +141,9 @@
 
 ;; I have to change this function's name...
 (defun close-fd-streams ()
-  (chdir "/")
   #-allegro
   (progn 
+    (chdir "/")
     #+sbcl
     (progn
       (setf sb-sys:*stdin* (make-concatenated-stream))
@@ -173,18 +164,6 @@
 				     *o-append*)) 1))
   #+allegro 
   (excl.osi:detach-from-terminal))
-
-(defun chore ()
-  #+linux
-  ;; oom_adj should be -17
-  (when (zerop (getpid))
-    (with-open-file (out (format nil "/proc/~A/oom_adj" (getpid))
-			 :direction :output
-			 :if-exists :overwrite
-			 :if-does-not-exist :create)
-      (format out "-17")))
-  #+sbcl
-  (setq sb-impl::*default-external-format* :utf-8))
 
 (defun daemonize (&key input output error (umask +default-mask+) pidfile
 		  exit-parent (exit-hook t) (disable-debugger t)
