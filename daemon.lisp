@@ -5,6 +5,9 @@
 
 (in-package :daemon)
 
+;;I don't know why but "sudo sbcl" lacks sb-posix
+#+sbcl(require :sb-posix)
+
 #+allegro
 (eval-when (:load-toplevel :execute)
   (unless (excl.osi:detach-from-terminal-supported-p)
@@ -91,8 +94,7 @@
 (defun umask (mask)
   #+sbcl (sb-posix:umask mask)
   #+allegro (excl.osi:umask mask)
-  #+ccl (#.(read-from-string "#_umask") mask)
-  )
+  #+ccl (#.(read-from-string "#_umask") mask))
 
 (defun setuid (uid)
   #+sbcl(sb-posix:setuid uid)
@@ -113,6 +115,26 @@
   #+sbcl (sb-posix:getuid)
   #+allegro (excl.osi:getuid)
   #+ccl (#.(read-from-string "#_getuid")))
+
+(defun getgrnam (name)
+  #+sbcl (sb-posix:getgrnam name)
+  #+allegro (excl.osi:getgrnam name)
+  #+ccl (ccl::with-cstrs ((cstr name)) (#.(read-from-string "#_getgrnam") cstr)))
+
+(defun setgid (gid)
+  #+sbcl (sb-posix:setgid gid)
+  #+allegro (excl.osi:setgid gid)
+  #+ccl (#.(read-from-string "#_setgid") gid))
+
+(defun getgrgid (gid)
+  #+sbcl (sb-posix:getgrgid gid)
+  #+allegro (excl.osi:getgrgid gid)
+  #+ccl (#.(read-from-string "#_getgrgid") gid))
+
+(defun group-gid (grp)
+  #+sbcl (sb-posix:group-gid grp)
+  #+allegro (excl.osi:grent-gid grp)
+  #+ccl (unless (ccl:%null-ptr-p grp) (ccl:pref grp :group.gr_gid)))
 
 (defun getpwnam (name)
   #+sbcl (sb-posix:getpwnam name)
@@ -139,11 +161,13 @@
   #+allegro (excl.osi:pwent-dir pswd)
   #+ccl (ccl:%get-cstring(ccl:pref pswd :passwd.pw_dir)))
 
-;; I have to change this function's name...
-(defun close-fd-streams ()
+(defun detouch-terminal (&key input output error)
+  (declare (ignorable input output error))
   #-allegro
   (progn 
     (chdir "/")
+    (unless (eql t (setsid))
+      (exit))
     #+sbcl
     (progn
       (setf sb-sys:*stdin* (make-concatenated-stream))
@@ -157,19 +181,19 @@
 	  ccl::*terminal-output* ccl::*stdout*
 	  ccl::*terminal-io* (make-two-way-stream 
 			      ccl::*terminal-input* ccl::*terminal-output*))
-    (let ((write (popen "/dev/null" *o-rdonly*)))
-      (dup2 write 0)
-      (dup2 write 2))
-    (dup2 (popen "/dev/null" (logior *o-wronly*
-				     *o-append*)) 1))
+    (dup2 (popen "/dev/null" *o-rdonly*) 0)
+    (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 1)
+    (dup2 (popen "/dev/null" *o-rdonly*) 2))
   #+allegro 
-  (excl.osi:detach-from-terminal))
+  (excl.osi:detach-from-terminal :output-stream nil :error-output-stream nil))
 
 (defun daemonize (&key input output error (umask +default-mask+) pidfile
 		  exit-parent (exit-hook t) (disable-debugger t)
 		  user group
 		  sigabrt sighup sigint sigterm)
-  (declare (ignorable input output error pidfile exit-hook disable-debugger group sigabrt sighup sigint sigterm))
+  (declare (ignorable exit-hook disable-debugger sigabrt sighup sigint sigterm))
+  (when pidfile
+    (ignore-errors (delete-file pidfile)))
   (let ((uid (typecase user
 	       (string
 		(or (passwd-uid (getpwnam user))
@@ -177,15 +201,24 @@
 	       (unsigned-byte
 		(or (passwd-uid user)
 		    (error "Unknown userid: ~S" user)))))
+	(gid (typecase group
+	       (string 
+		(group-gid 
+		 (or (getgrnam group)
+		     (error "Unknown groupname: ~S" group))))
+	       (unsigned-byte
+		(if (getgrgid group)
+		    group
+		    (error "Unknown groupid: ~S" group)))))
 	(pid (fork)))
-    (declare (ignorable uid))
     (cond ((zerop pid)
 	   ;; Child
-	   #-allegro
-	   (unless (eql t (setsid))
-	     (exit))
 	   (umask umask)
-	   (close-fd-streams)
+	   (detouch-terminal :input input :output output :error error)
+	   (when gid
+	     (setgid gid))
+	   (when uid 
+	     (setuid uid))
 	   (let* ((out (make-two-way-stream 
 			(make-concatenated-stream)
 			(make-broadcast-stream))))
@@ -195,14 +228,17 @@
 		   *standard-input* out
 		   *debug-io* out
 		   *query-io* out
-		   *terminal-io* out))
-	   )
+		   *terminal-io* out)))
 	  (t 
 	   ;; Parent
 	   (when exit-parent
 	     (exit))
-	   #-allegro(pclose 0)
-	   #-allegro(pclose 1)
-	   #-allegro(pclose 2)
+	   (pclose 0)
+	   (pclose 1)
+	   (pclose 2)
 	   (return-from daemonize pid))))
+  (when pidfile
+    (with-open-file (f pidfile :direction :output
+		       :if-exists :supersede)
+      (format f "~A~%" (getpid))))
   nil)
