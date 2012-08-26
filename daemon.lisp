@@ -1,65 +1,91 @@
 (defpackage :daemon
   (:use :cl)
   (:export #:exit
-	   #:daemonize))
+	   #:daemonize
+	   #:fork))
 
 (in-package :daemon)
 
 ;;I don't know why but "sudo sbcl" lacks sb-posix
-#+sbcl(require :sb-posix)
+#+sbcl
+(require :sb-posix)
 
 #+allegro
 (eval-when (:load-toplevel :execute)
   (unless (excl.osi:detach-from-terminal-supported-p)
     (error "not supported allegro cl to detach console")))
 
+#+ecl
+(ffi:clines "#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <grp.h>
+#include <pwd.h>
+#include <sys/stat.h>
+")
+
+
 (defconstant +default-mask+ (if (boundp '+default-mask+) +default-mask+ #o022))
 (defconstant +default-mode+ (if (boundp '+default-mode+) +default-mode+ #o600))
 
-(defconstant +wnohang+ (if (boundp '+wnohang+) +wnohang+
-			   #+sbcl 1
-			   #+allegro 1
-			   #+ccl #.(read-from-string "#$WNOHANG")))
+(defvar *wnohang* (or 
+		   #+sbcl 1
+		   #+allegro 1
+		   #+ccl #.(read-from-string "#$WNOHANG")
+		   #+ecl (ffi:c-inline () () :int "WNOHANG" :one-liner t)
+		   ))
 
 (defvar *o-rdonly* (or 
 		    #+sbcl sb-posix:o-rdonly
 		    #+allegro excl::*o-rdonly*
 		    #+ccl #.(read-from-string "#$O_RDONLY")
+		    #+ecl (ffi:c-inline () () :int "O_RDONLY" :one-liner t)
 		    ))
 
 (defvar *o-wronly* (or
 		    #+sbcl sb-posix:o-wronly
 		    #+allegro excl::*o-wronly*
 		    #+ccl #.(read-from-string "#$O_WRONLY")
+		    #+ecl (ffi:c-inline () () :int "O_WRONLY" :one-liner t)
 		    ))
 
 (defvar *o-append* (or 
 		    #+sbcl sb-posix:o-append
 		    #+allegro excl::*o-append*
 		    #+ccl #.(read-from-string "#$O_APPEND")
+		    #+ecl (ffi:c-inline () () :int "O_APPEND" :one-liner t)
 		    ))
 
 (defun chdir (dir)
   #+sbcl (sb-posix:chdir dir)
   #+allegro (excl:chdir dir)
-  #+ccl (ccl::%chdir dir))
+  #+ccl (ccl::%chdir dir)
+  #+ecl (ffi:c-inline (dir) (:cstring) :int
+			"chdir(#0)" :one-liner t))
 
 (defun dup2  (old new)
   #+sbcl (sb-posix:dup2 old new)
   #+allegro (excl.osi::syscall-dup2 old new)
-  #+ccl (#.(read-from-string "#_dup2") old new))
+  #+ccl (#.(read-from-string "#_dup2") old new)
+  #+ecl (ffi:c-inline (old new) (:int :int) :int
+			"dup2(#0,#1)" :one-liner t))
 
 (defun fork ()
   (or
    #+sbcl (sb-posix:fork)
    #+allegro (excl.osi:fork)
    #+ccl (#.(read-from-string "#_fork"))
+   #+ecl (ffi:c-inline () () :int
+		       "(int) fork()" :one-liner t)
    (error "should support fork")))
 
 #-allegro
 (defun popen (fspec flags)
   #+sbcl (sb-posix:open fspec flags)
-  #+ccl (ccl:with-cstrs ((cstr fspec)) (#.(read-from-string "#_open") cstr flags)))
+  #+ccl (ccl:with-cstrs ((cstr fspec)) (#.(read-from-string "#_open") cstr flags))
+  #+ecl (ffi:c-inline (fspec flags) (:cstring :int) :int
+		      "open(#0,#1)" :one-liner t))
 
 #+allegro 
 (ff:def-foreign-call (popen "open") ((path (* :char)) (flags :int)) :strings-convert t)
@@ -67,7 +93,9 @@
 #-allegro
 (defun pclose (fd)
   #+sbcl (sb-posix:close fd)
-  #+ccl (#.(read-from-string "#_close") fd))
+  #+ccl (#.(read-from-string "#_close") fd)
+  #+ecl (ffi:c-inline (fd) (:int) :int
+		      "close(#0)" :one-liner t))
 
 #+allegro
 (ff:def-foreign-call (pclose "close") (d)) 
@@ -79,87 +107,129 @@
 	(read-from-string "(sb-posix:exit 0)")
 	(read-from-string "(sb-unix:unix-exit)"))
   #+allegro (excl:exit 0 :quiet t)
-  #+ccl (#.(read-from-string "#_exit") 0))
+  #+ccl (#.(read-from-string "#_exit") 0)
+  #+ecl (ext:exit))
 
 (defun waitpid (pid option)
   #+sbcl(zerop (sb-posix:waitpid pid option))
   #+allegro (not (excl.osi:waitpid pid :wnohang (not (zerop option))))
-  #+ccl (zerop (#.(read-from-string "#_waitpid") pid 0 option)))
+  #+ccl (zerop (#.(read-from-string "#_waitpid") pid 0 option))
+  #+ecl (ffi:c-inline (pid option) (:int :int) :int
+		      "waitpid(#0,NULL,#1)" :one-liner t))
 
 (defun setsid ()
   #+sbcl (not (minusp (sb-posix:setsid))) 
   #+allegro (excl.osi:setsid)
-  #+ccl (not (minusp (#.(read-from-string "#_setsid")))))
+  #+ccl (not (minusp (#.(read-from-string "#_setsid"))))
+  #+ecl (not (minusp (ffi:c-inline () () :int
+		      "setsid()" :one-liner t))))
 
 (defun umask (mask)
   #+sbcl (sb-posix:umask mask)
   #+allegro (excl.osi:umask mask)
-  #+ccl (#.(read-from-string "#_umask") mask))
+  #+ccl (#.(read-from-string "#_umask") mask)
+  #+ecl (ffi:c-inline (mask) (:int) :int
+		      "umask(#0)" :one-liner t))
 
 (defun setuid (uid)
   #+sbcl(sb-posix:setuid uid)
   #+allegro (excl.osi:setuid uid)
-  #+ccl (#.(read-from-string "#_setuid") uid))
+  #+ccl (#.(read-from-string "#_setuid") uid)
+  #+ecl (ffi:c-inline (uid) (:int) :int
+		      "setuid(#0)" :one-liner t))
 
 (defun getpid ()
   #+sbcl (sb-posix:getpid)
   #+allegro (excl.osi:getpid)
-  #+ccl (ccl::getpid))
+  #+ccl (ccl::getpid)
+  #+ecl (ffi:c-inline () () :int
+		      "getpid()" :one-liner t))
 
 (defun getppid ()
   #+sbcl (sb-posix:getppid)
   #+allegro (excl.osi:getppid)
-  #+ccl (#.(read-from-string "#_getppid")))
+  #+ccl (#.(read-from-string "#_getppid"))
+  #+ecl (ffi:c-inline () () :int
+		      "getppid()" :one-liner t))
 
 (defun getuid ()
   #+sbcl (sb-posix:getuid)
   #+allegro (excl.osi:getuid)
-  #+ccl (#.(read-from-string "#_getuid")))
+  #+ccl (#.(read-from-string "#_getuid"))
+  #+ecl (ffi:c-inline () () :int
+		      "getuid()" :one-liner t))
 
 (defun getgrnam (name)
   #+sbcl (sb-posix:getgrnam name)
   #+allegro (excl.osi:getgrnam name)
-  #+ccl (ccl::with-cstrs ((cstr name)) (#.(read-from-string "#_getgrnam") cstr)))
+  #+ccl (ccl::with-cstrs ((cstr name)) (#.(read-from-string "#_getgrnam") cstr))
+  #+ecl (let ((ret (ffi:c-inline (name) (:cstring) :pointer-void
+				 "getgrnam(#0)" :one-liner t)))
+	  (unless (zerop (si:foreign-data-address ret))
+	    ret)))
 
 (defun setgid (gid)
   #+sbcl (sb-posix:setgid gid)
   #+allegro (excl.osi:setgid gid)
-  #+ccl (#.(read-from-string "#_setgid") gid))
+  #+ccl (#.(read-from-string "#_setgid") gid)
+  #+ecl (ffi:c-inline (gid) (:int) :int
+		     "setgid(#0)" :one-liner t))
 
 (defun getgrgid (gid)
   #+sbcl (sb-posix:getgrgid gid)
   #+allegro (excl.osi:getgrgid gid)
-  #+ccl (#.(read-from-string "#_getgrgid") gid))
+  #+ccl (#.(read-from-string "#_getgrgid") gid)
+  #+ecl (ffi:c-inline (gid) (:int) :pointer-void
+		      "getgrgid(#0)" :one-liner t))
 
 (defun group-gid (grp)
   #+sbcl (sb-posix:group-gid grp)
   #+allegro (excl.osi:grent-gid grp)
-  #+ccl (unless (ccl:%null-ptr-p grp) (ccl:pref grp :group.gr_gid)))
+  #+ccl (unless (ccl:%null-ptr-p grp) (ccl:pref grp :group.gr_gid))
+  #+ecl (ffi:c-inline (grp) (:pointer-void) :int
+		      "((struct group*)(#0))->gr_gid" :one-liner t))
 
 (defun getpwnam (name)
   #+sbcl (sb-posix:getpwnam name)
   #+allegro (excl.osi:getpwnam name)
-  #+ccl (ccl::with-cstrs ((cstr name)) (#.(read-from-string "#_getpwnam") cstr)))
+  #+ccl (ccl::with-cstrs ((cstr name)) (#.(read-from-string "#_getpwnam") cstr))
+  #+ecl (let ((ret (ffi:c-inline (name) (:cstring) :pointer-void
+				 "getpwnam(#0)" :one-liner t)))
+	  (unless (zerop (si:foreign-data-address ret))
+	    ret)))
 
 (defun getpwuid (id)
   #+sbcl (sb-posix:getpwuid id)
-  #+allegro (excl.osi:getpwuid uid)
-  #+ccl (#.(read-from-string "#_getpwuid") id))
+  #+allegro (excl.osi:getpwuid id)
+  #+ccl (#.(read-from-string "#_getpwuid") id)
+  #+ecl (let ((ret (ffi:c-inline (id) (:int) :pointer-void
+				 "getpwuid(#0)" :one-liner t)))
+	  (unless (zerop (si:foreign-data-address ret))
+	    ret)))
 
-(defun uid-username (uid)
-  #+sbcl (sb-posix:passwd-name (getpwuid uid))
-  #+allegro (excl.osi:pwent-name (getpwuid uid))
-  #+ccl (ccl:%get-cstring (ccl:pref (getpwuid uid) :passwd.pw_name)))
+(defun passwd-username (pswd)
+  #+sbcl (sb-posix:passwd-name pswd)
+  #+allegro (excl.osi:pwent-name pswd)
+  #+ccl (ccl:%get-cstring (ccl:pref pswd :passwd.pw_name))
+  #+ecl (when pswd
+	  (ffi:c-inline (pswd) (:pointer-void) :cstring
+			"((struct passwd*)(#0))->pw_name" :one-liner t)))
 
 (defun passwd-uid (pswd)
   #+sbcl(sb-posix:passwd-uid pswd)
   #+allegro (excl.osi:pwent-uid pswd)
-  #+ccl (unless (ccl:%null-ptr-p pswd) (ccl:pref pswd :passwd.pw_uid)))
+  #+ccl (unless (ccl:%null-ptr-p pswd) (ccl:pref pswd :passwd.pw_uid))
+  #+ecl (when pswd
+	  (ffi:c-inline (pswd) (:pointer-void) :int
+			"((struct passwd*)(#0))->pw_uid" :one-liner t)))
 
 (defun passwd-dir (pswd)
   #+sbcl (sb-posix:passwd-dir pswd)
   #+allegro (excl.osi:pwent-dir pswd)
-  #+ccl (ccl:%get-cstring(ccl:pref pswd :passwd.pw_dir)))
+  #+ccl (ccl:%get-cstring(ccl:pref pswd :passwd.pw_dir))
+  #+ecl (when pswd
+	  (ffi:c-inline (pswd) (:pointer-void) :cstring
+			"((struct passwd*)(#0))->pw_dir" :one-liner t)))
 
 (defun detouch-terminal (&key input output error)
   (declare (ignorable input output error))
