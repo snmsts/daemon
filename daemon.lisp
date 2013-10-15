@@ -243,6 +243,8 @@
     #+sbcl
     (progn
       (setf sb-sys:*stdin* (make-concatenated-stream))
+      (setf sb-sys:*stdout* (make-broadcast-stream))
+      (setf sb-sys:*stderr* (make-broadcast-stream))
       (when (sb-sys:fd-stream-p sb-sys:*tty*)
         (close sb-sys:*tty* :abort t)
         (setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*))))
