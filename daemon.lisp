@@ -8,10 +8,6 @@
 
 (in-package :daemon)
 
-;;I don't know why but "sudo sbcl" lacks sb-posix
-#+sbcl
-(require :sb-posix)
-
 #+allegro
 (eval-when (:load-toplevel :execute)
   (unless (excl.osi:detach-from-terminal-supported-p)
