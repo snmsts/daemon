@@ -1,11 +1,3 @@
-(in-package :cl-user)
-
-(defpackage :daemon
-  (:use :cl)
-  (:export #:exit
-           #:daemonize
-           #:fork))
-
 (in-package :daemon)
 
 #+allegro
@@ -253,7 +245,7 @@
                               ccl::*terminal-input* ccl::*terminal-output*))
     (dup2 (popen "/dev/null" *o-rdonly*) 0)
     (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 1)
-    (dup2 (popen "/dev/null" *o-rdonly*) 2))
+    (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 2))
   #+allegro
   (excl.osi:detach-from-terminal :output-stream nil :error-output-stream nil))
 
