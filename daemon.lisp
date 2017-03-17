@@ -221,6 +221,20 @@
           (ffi:c-inline (pswd) (:pointer-void) :cstring
                         "((struct passwd*)(#0))->pw_dir" :one-liner t)))
 
+(defun pipe ()
+  #+sbcl (multiple-value-list (sb-posix:pipe))
+  #+allegro
+  (multiple-value-bind (r w)
+      (excl.osi:pipe)
+    (list (excl.osi::stream-to-fd r)
+          (excl.osi::stream-to-fd w)))
+  #+ccl (multiple-value-list (ccl::pipe))
+  #+ecl
+  (let ((stream (ext:make-pipe)))
+    (list
+     (ext:file-stream-fd (two-way-stream-input-stream stream))
+     (ext:file-stream-fd (two-way-stream-output-stream stream)))))
+
 (defun detouch-terminal (&key input output error set-stream)
   (declare (ignorable input output error))
   #-allegro
@@ -244,9 +258,13 @@
     (when (sb-sys:fd-stream-p sb-sys:*tty*)
       (close sb-sys:*tty* :abort t)
       (setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*)))
-    (dup2 (popen "/dev/null" *o-rdonly*) 0)
-    (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 1)
-    (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 2))
+    (let ((p (popen "/dev/null" *o-rdonly*)))
+      (dup2 p 0)
+      (pclose p))
+    (let ((p (popen "/dev/null" (logior *o-wronly* *o-append*))))
+      (dup2 p 1)
+      (dup2 p 2)
+      (pclose p)))
   #+allegro
   (excl.osi:detach-from-terminal :output-stream nil :error-output-stream nil))
 
