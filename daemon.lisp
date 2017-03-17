@@ -221,28 +221,29 @@
           (ffi:c-inline (pswd) (:pointer-void) :cstring
                         "((struct passwd*)(#0))->pw_dir" :one-liner t)))
 
-(defun detouch-terminal (&key input output error)
+(defun detouch-terminal (&key input output error set-stream)
   (declare (ignorable input output error))
   #-allegro
   (progn
     (chdir "/")
     (unless (eql t (setsid))
       (exit))
+    (when set-stream
+      #+sbcl
+      (setf sb-sys:*stdin* (make-concatenated-stream)
+            sb-sys:*stdout* (make-broadcast-stream)
+            sb-sys:*stderr* (make-broadcast-stream))
+      #+ccl
+      (setf ccl::*stdin* (make-concatenated-stream)
+            ccl::*stdout* (make-broadcast-stream)
+            ccl::*terminal-input* ccl::*stdin*
+            ccl::*terminal-output* ccl::*stdout*
+            ccl::*terminal-io* (make-two-way-stream
+                                ccl::*terminal-input* ccl::*terminal-output*)))
     #+sbcl
-    (progn
-      (setf sb-sys:*stdin* (make-concatenated-stream))
-      (setf sb-sys:*stdout* (make-broadcast-stream))
-      (setf sb-sys:*stderr* (make-broadcast-stream))
-      (when (sb-sys:fd-stream-p sb-sys:*tty*)
-        (close sb-sys:*tty* :abort t)
-        (setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*))))
-    #+ccl
-    (setf ccl::*stdin* (make-concatenated-stream)
-          ccl::*stdout* (make-broadcast-stream)
-          ccl::*terminal-input* ccl::*stdin*
-          ccl::*terminal-output* ccl::*stdout*
-          ccl::*terminal-io* (make-two-way-stream
-                              ccl::*terminal-input* ccl::*terminal-output*))
+    (when (sb-sys:fd-stream-p sb-sys:*tty*)
+      (close sb-sys:*tty* :abort t)
+      (setf sb-sys:*tty* (make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*)))
     (dup2 (popen "/dev/null" *o-rdonly*) 0)
     (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 1)
     (dup2 (popen "/dev/null" (logior *o-wronly* *o-append*)) 2))
@@ -251,7 +252,7 @@
 
 (defun daemonize (&key input output error (umask +default-mask+) pidfile
                     exit-parent (exit-hook t) (disable-debugger t)
-                    user group
+                    user group (set-stream t)
                     sigabrt sighup sigint sigterm)
   (declare (ignorable exit-hook disable-debugger sigabrt sighup sigint sigterm))
   (when pidfile
@@ -276,21 +277,22 @@
     (cond ((zerop pid)
            ;; Child
            (umask umask)
-           (detouch-terminal :input input :output output :error error)
+           (detouch-terminal :input input :output output :error error :set-stream set-stream)
            (when gid
              (setgid gid))
            (when uid
              (setuid uid))
-           (let* ((out (make-two-way-stream
-                        (make-concatenated-stream)
-                        (make-broadcast-stream))))
-             (setf *standard-output* out
-                   *error-output* out
-                   *trace-output* out
-                   *standard-input* out
-                   *debug-io* out
-                   *query-io* out
-                   *terminal-io* out)))
+           (when set-stream
+             (let ((out (make-two-way-stream
+                         (make-concatenated-stream)
+                         (make-broadcast-stream))))
+               (setf *standard-output* out
+                     *error-output* out
+                     *trace-output* out
+                     *standard-input* out
+                     *debug-io* out
+                     *query-io* out
+                     *terminal-io* out))))
           (t
            ;; Parent
            (when exit-parent
